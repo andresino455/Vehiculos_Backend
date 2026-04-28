@@ -323,7 +323,6 @@ def actualizar_estado(
     if datos.estado == "atendido":
         incidente.completado_en = datetime.utcnow()
 
-    # Liberar técnico cuando termina el servicio
     if datos.estado in ["atendido", "cancelado"] and incidente.tecnico_id:
         tecnico = db.query(Tecnico).filter(Tecnico.id == incidente.tecnico_id).first()
         if tecnico:
@@ -339,11 +338,10 @@ def actualizar_estado(
     )
     db.add(historial)
 
-    # Notificación según el estado
     mensajes_notif = {
         "atendido": {
             "titulo": "✅ Servicio completado",
-            "mensaje": f"Tu incidente fue atendido exitosamente. Podés calificar el servicio y realizar el pago.",
+            "mensaje": "Tu incidente fue atendido exitosamente. Podés calificar el servicio y realizar el pago.",
         },
         "cancelado": {
             "titulo": "❌ Servicio cancelado",
@@ -368,22 +366,13 @@ def actualizar_estado(
 
     usuario_id_str = str(incidente.usuario_id)
     incidente_id_str = str(incidente.id)
-    taller_nombre = taller.nombre
 
     db.commit()
     db.refresh(incidente)
 
-    # Notificar por WebSocket
     if notif_data:
         import threading
         import asyncio
-
-        ws_msg = {
-            "tipo": datos.estado,
-            "titulo": notif_data["titulo"],
-            "mensaje": notif_data["mensaje"],
-            "incidente_id": incidente_id_str,
-        }
 
         def enviar_ws():
             try:
@@ -392,13 +381,41 @@ def actualizar_estado(
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 loop.run_until_complete(
-                    manager.enviar_a(f"usuario_{usuario_id_str}", ws_msg)
+                    manager.enviar_a(
+                        f"usuario_{usuario_id_str}",
+                        {
+                            "tipo": datos.estado,
+                            "titulo": notif_data["titulo"],
+                            "mensaje": notif_data["mensaje"],
+                            "incidente_id": incidente_id_str,
+                        },
+                    )
                 )
                 loop.close()
             except Exception as e:
                 print(f"[WS] Error notificando usuario: {e}")
 
+        def enviar_push():
+            try:
+                from app.services.fcm_service import enviar_notificacion_push
+                from app.database import SessionLocal
+
+                db2 = SessionLocal()
+                try:
+                    enviar_notificacion_push(
+                        db2,
+                        usuario_id_str,
+                        notif_data["titulo"],
+                        notif_data["mensaje"],
+                        {"incidente_id": incidente_id_str, "tipo": datos.estado},
+                    )
+                finally:
+                    db2.close()
+            except Exception as e:
+                print(f"[FCM] Error: {e}")
+
         threading.Thread(target=enviar_ws, daemon=True).start()
+        threading.Thread(target=enviar_push, daemon=True).start()
 
     return incidente
 
@@ -419,7 +436,6 @@ def asignar_taller(
             status_code=404, detail="Incidente no encontrado o no disponible"
         )
 
-    # Verificar que hay técnicos disponibles
     tecnico_disponible = (
         db.query(Tecnico)
         .filter(Tecnico.taller_id == taller.id, Tecnico.estado == "disponible")
@@ -454,7 +470,6 @@ def asignar_taller(
     incidente.estado = "en_proceso"
     tecnico_disponible.estado = "ocupado"
 
-    # Inicializar ubicación del técnico con la del taller
     if taller.latitud and taller.longitud:
         tecnico_disponible.latitud_actual = taller.latitud
         tecnico_disponible.longitud_actual = taller.longitud
@@ -500,7 +515,27 @@ def asignar_taller(
         except Exception as e:
             print(f"[WS] Error notificando usuario: {e}")
 
+    def enviar_push():
+        try:
+            from app.services.fcm_service import enviar_notificacion_push
+            from app.database import SessionLocal
+
+            db2 = SessionLocal()
+            try:
+                enviar_notificacion_push(
+                    db2,
+                    usuario_id_str,
+                    "¡Taller en camino!",
+                    f"{taller_nombre} aceptó tu solicitud. Tiempo estimado: {tiempo_est} min.",
+                    {"incidente_id": incidente_id_str, "tipo": "taller_asignado"},
+                )
+            finally:
+                db2.close()
+        except Exception as e:
+            print(f"[FCM] Error: {e}")
+
     threading.Thread(target=enviar_ws, daemon=True).start()
+    threading.Thread(target=enviar_push, daemon=True).start()
 
     return asignacion
 

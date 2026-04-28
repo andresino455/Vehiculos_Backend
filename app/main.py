@@ -15,6 +15,7 @@ from app.routers import (
     tecnicos_app,
 )
 from app.routers import websocket as ws_router
+from app.routers import notificaciones_push
 
 import os
 
@@ -45,6 +46,7 @@ app.include_router(ia.router)
 app.include_router(ws_router.router)
 app.include_router(calificaciones.router)
 app.include_router(tecnicos_app.router)
+app.include_router(notificaciones_push.router)
 
 
 def custom_openapi():
