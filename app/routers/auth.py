@@ -7,6 +7,7 @@ from app.schemas.usuario import UsuarioRegistro, UsuarioLogin, UsuarioRespuesta
 from app.schemas.taller import TallerRegistro, TallerLogin, TallerRespuesta
 from app.schemas.token import Token
 from app.core.security import hash_password, verify_password, create_access_token
+from pydantic import BaseModel
 
 router = APIRouter(prefix="/auth", tags=["Autenticación"])
 
@@ -62,3 +63,25 @@ def login_taller(datos: TallerLogin, db: Session = Depends(get_db)):
         raise HTTPException(status_code=401, detail="Credenciales incorrectas")
     token = create_access_token({"sub": str(taller.id), "tipo": "taller"})
     return {"access_token": token, "token_type": "bearer", "tipo_usuario": "taller"}
+
+from app.models.tecnico import Tecnico
+
+
+class TecnicoLogin(BaseModel):
+    telefono: str
+    taller_id: str
+
+
+@router.post("/login-tecnico", response_model=Token)
+def login_tecnico(datos: TecnicoLogin, db: Session = Depends(get_db)):
+    tecnico = (
+        db.query(Tecnico)
+        .filter(
+            Tecnico.telefono == datos.telefono, Tecnico.taller_id == datos.taller_id
+        )
+        .first()
+    )
+    if not tecnico:
+        raise HTTPException(status_code=401, detail="Técnico no encontrado")
+    token = create_access_token({"sub": str(tecnico.id), "tipo": "tecnico"})
+    return {"access_token": token, "token_type": "bearer", "tipo_usuario": "tecnico"}

@@ -5,10 +5,13 @@ from app.core.security import decode_token
 from app.models.usuario import Usuario
 from app.models.taller import Taller
 
+
 def get_token(request: Request) -> str:
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token no proporcionado")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Token no proporcionado"
+        )
     return auth.split(" ")[1]
 
 def get_usuario_actual(token: str = Depends(get_token), db: Session = Depends(get_db)):
