@@ -1,16 +1,16 @@
-from google import genai
-from google.genai import types
+from groq import Groq
 from app.core.config import settings
 import json
-import time
+import base64
 
-client = genai.Client(api_key=settings.GEMINI_API_KEY)
+client = Groq(api_key=settings.GROQ_API_KEY)
 
 def analizar_imagen(ruta_imagen: str) -> dict:
     try:
         with open(ruta_imagen, "rb") as f:
             datos = f.read()
 
+        imagen_base64 = base64.b64encode(datos).decode("utf-8")
         extension = ruta_imagen.split(".")[-1].lower()
         mime_types = {
             "jpg": "image/jpeg",
@@ -20,32 +20,33 @@ def analizar_imagen(ruta_imagen: str) -> dict:
         }
         mime = mime_types.get(extension, "image/jpeg")
 
-        prompt = """Analizá esta imagen de un vehículo con un problema mecánico.
-        Respondé SOLO en este formato JSON exacto sin markdown ni backticks:
-        {
-            "categoria": "bateria|llanta|choque|motor|otros|incierto",
-            "descripcion": "descripción breve del problema visible en máximo 2 oraciones",
-            "confianza": "alta|media|baja"
-        }"""
+        respuesta = client.chat.completions.create(
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:{mime};base64,{imagen_base64}"},
+                        },
+                        {
+                            "type": "text",
+                            "text": """Analizá esta imagen de un vehículo con un problema mecánico.
+Respondé SOLO en este formato JSON exacto sin markdown ni backticks:
+{
+    "categoria": "bateria|llanta|choque|motor|otros|incierto",
+    "descripcion": "descripción breve del problema visible en máximo 2 oraciones",
+    "confianza": "alta|media|baja"
+}""",
+                        },
+                    ],
+                }
+            ],
+            max_tokens=200,
+        )
 
-        for intento in range(3):
-            try:
-                respuesta = client.models.generate_content(
-                    model="gemini-2.0-flash-lite",
-                    contents=[
-                        types.Part.from_bytes(data=datos, mime_type=mime),
-                        prompt
-                    ]
-                )
-                break
-            except Exception as e:
-                if "429" in str(e) and intento < 2:
-                    print(f"[IA] Rate limit en imagen, esperando 35 segundos...")
-                    time.sleep(35)
-                else:
-                    raise e
-
-        texto = respuesta.text.strip()
+        texto = respuesta.choices[0].message.content.strip()
         texto = texto.replace("```json", "").replace("```", "").strip()
         print(f"[IA] Análisis imagen: {texto}")
         return json.loads(texto)
@@ -62,37 +63,14 @@ def analizar_imagen(ruta_imagen: str) -> dict:
 def transcribir_audio(ruta_audio: str) -> str:
     try:
         with open(ruta_audio, "rb") as f:
-            datos = f.read()
-
-        extension = ruta_audio.split(".")[-1].lower()
-        mime_types = {
-            "mp3": "audio/mp3",
-            "wav": "audio/wav",
-            "m4a": "audio/m4a",
-            "ogg": "audio/ogg",
-            "webm": "audio/webm"
-        }
-        mime = mime_types.get(extension, "audio/mp3")
-
-        for intento in range(3):
-            try:
-                respuesta = client.models.generate_content(
-                    model="gemini-2.0-flash-lite",
-                    contents=[
-                        types.Part.from_bytes(data=datos, mime_type=mime),
-                        "Transcribí este audio en español. Devolvé solo el texto transcripto sin explicaciones adicionales."
-                    ]
-                )
-                break
-            except Exception as e:
-                if "429" in str(e) and intento < 2:
-                    print(f"[IA] Rate limit en audio, esperando 35 segundos...")
-                    time.sleep(35)
-                else:
-                    raise e
-
-        print(f"[IA] Transcripción: {respuesta.text.strip()}")
-        return respuesta.text.strip()
+            transcripcion = client.audio.transcriptions.create(
+                file=(ruta_audio.split("\\")[-1], f.read()),
+                model="whisper-large-v3",
+                language="es",
+                response_format="text",
+            )
+        print(f"[IA] Transcripción: {transcripcion}")
+        return transcripcion
 
     except Exception as e:
         print(f"[IA] Error transcribiendo audio: {e}")
@@ -142,23 +120,22 @@ Criterios de prioridad:
 - media: el vehículo no funciona pero no hay peligro
 - baja: problema menor"""
 
-        for intento in range(3):
-            try:
-                respuesta = client.models.generate_content(
-                    model="gemini-2.0-flash-lite",
-                    contents=prompt
-                )
-                break
-            except Exception as e:
-                if "429" in str(e) and intento < 2:
-                    print(f"[IA] Rate limit en resumen, esperando 35 segundos...")
-                    time.sleep(35)
-                else:
-                    raise e
+        respuesta = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "Sos un experto en mecánica vehicular. Respondés siempre en JSON válido sin markdown.",
+                },
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=300,
+            temperature=0.3,
+        )
 
-        texto = respuesta.text.strip()
+        texto = respuesta.choices[0].message.content.strip()
         texto = texto.replace("```json", "").replace("```", "").strip()
-        print(f"[IA] Respuesta Gemini: {texto}")
+        print(f"[IA] Respuesta Groq: {texto}")
         return json.loads(texto)
 
     except Exception as e:
