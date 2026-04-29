@@ -34,3 +34,17 @@ def registrar_token(
     )
     db.commit()
     return {"mensaje": "Token registrado"}
+
+
+@router.post("/test-push/{usuario_id}")
+def test_push(usuario_id: str, db: Session = Depends(get_db)):
+    from app.services.fcm_service import enviar_notificacion_push
+
+    enviar_notificacion_push(
+        db,
+        usuario_id,
+        "🚗 Prueba de notificación",
+        "Si ves esto, las notificaciones push funcionan",
+        {"tipo": "test"},
+    )
+    return {"mensaje": "Push enviado"}

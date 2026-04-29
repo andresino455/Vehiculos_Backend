@@ -173,7 +173,6 @@ class EstadoActualizar(BaseModel):
 @router.post("/", response_model=IncidenteRespuesta, status_code=201)
 def crear_incidente(
     datos: IncidenteCrear,
-    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     usuario: Usuario = Depends(get_usuario_actual),
 ):
@@ -199,9 +198,6 @@ def crear_incidente(
     )
     db.add(historial)
     db.commit()
-
-    # Analizar con IA y notificar talleres en segundo plano
-    background_tasks.add_task(analizar_y_notificar, str(incidente.id))
 
     return incidente
 
