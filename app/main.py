@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from fastapi.staticfiles import StaticFiles
+from app.services.fcm_service import inicializar_firebase
 from app.routers import (
     auth,
     vehiculos,
@@ -47,7 +48,7 @@ app.include_router(ws_router.router)
 app.include_router(calificaciones.router)
 app.include_router(tecnicos_app.router)
 app.include_router(notificaciones_push.router)
-
+inicializar_firebase()
 
 def custom_openapi():
     if app.openapi_schema:

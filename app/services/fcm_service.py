@@ -4,19 +4,25 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 import os
 
-# Inicializar Firebase Admin una sola vez
+KEY_PATH = os.getenv("FIREBASE_KEY_PATH", "firebase-key.json")
 _firebase_inicializado = False
 
-def _inicializar_firebase():
+
+def inicializar_firebase():
     global _firebase_inicializado
-    if not _firebase_inicializado:
-        try:
-            cred = credentials.Certificate("firebase-key.json")
+    if _firebase_inicializado:
+        return
+    print(f"[FCM] Buscando clave en: {KEY_PATH}")
+    print(f"[FCM] Archivo existe: {os.path.exists(KEY_PATH)}")
+    try:
+        if not firebase_admin._apps:
+            cred = credentials.Certificate(KEY_PATH)
             firebase_admin.initialize_app(cred)
-            _firebase_inicializado = True
-            print("[FCM] Firebase Admin inicializado")
-        except Exception as e:
-            print(f"[FCM] Error inicializando Firebase: {e}")
+        _firebase_inicializado = True
+        print("[FCM] Firebase Admin inicializado correctamente")
+    except Exception as e:
+        print(f"[FCM] Error inicializando Firebase: {e}")
+
 
 def enviar_notificacion_push(
     db: Session,
@@ -25,8 +31,9 @@ def enviar_notificacion_push(
     mensaje: str,
     data: dict = {}
 ):
-    _inicializar_firebase()
+    inicializar_firebase()
     if not _firebase_inicializado:
+        print("[FCM] Firebase no inicializado, no se puede enviar push")
         return
 
     try:
@@ -60,21 +67,7 @@ def enviar_notificacion_push(
                 response = messaging.send(message)
                 print(f"[FCM] Push enviado: {response}")
             except Exception as e:
-                print(f"[FCM] Error enviando a token {token[:20]}: {e}")
+                print(f"[FCM] Error enviando a token: {e}")
 
     except Exception as e:
         print(f"[FCM] Error general: {e}")
-        
-import os
-
-KEY_PATH = os.getenv("FIREBASE_KEY_PATH", "firebase-key.json")
-
-def _inicializar_firebase():
-    global _firebase_inicializado
-    if not _firebase_inicializado:
-        try:
-            cred = credentials.Certificate(KEY_PATH)
-            firebase_admin.initialize_app(cred)
-            _firebase_inicializado = True
-        except Exception as e:
-            print(f"[FCM] Error: {e}")
