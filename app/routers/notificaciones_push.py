@@ -9,15 +9,17 @@ import uuid
 
 router = APIRouter(prefix="/notificaciones", tags=["Notificaciones Push"])
 
+
 class TokenFCM(BaseModel):
     token: str
     plataforma: str = "android"
+
 
 @router.post("/registrar-token")
 def registrar_token(
     datos: TokenFCM,
     db: Session = Depends(get_db),
-    usuario: Usuario = Depends(get_usuario_actual)
+    usuario: Usuario = Depends(get_usuario_actual),
 ):
     db.execute(
         text("""
@@ -29,11 +31,41 @@ def registrar_token(
             "id": str(uuid.uuid4()),
             "usuario_id": str(usuario.id),
             "token": datos.token,
-            "plataforma": datos.plataforma
-        }
+            "plataforma": datos.plataforma,
+        },
     )
     db.commit()
     return {"mensaje": "Token registrado"}
+
+
+@router.get("/diagnostico-fcm")
+def diagnostico_fcm():
+    import os
+    import firebase_admin
+
+    key_path = os.getenv("FIREBASE_KEY_PATH", "firebase-key.json")
+    existe = os.path.exists(key_path)
+
+    contenido_parcial = ""
+    if existe:
+        try:
+            with open(key_path, "r") as f:
+                contenido = f.read()
+                contenido_parcial = contenido[:80]
+        except Exception as e:
+            contenido_parcial = f"Error leyendo: {e}"
+
+    try:
+        apps_inicializadas = len(firebase_admin._apps)
+    except Exception:
+        apps_inicializadas = 0
+
+    return {
+        "key_path": key_path,
+        "archivo_existe": existe,
+        "contenido_inicio": contenido_parcial,
+        "apps_firebase_inicializadas": apps_inicializadas,
+    }
 
 
 @router.post("/test-push/{usuario_id}")
