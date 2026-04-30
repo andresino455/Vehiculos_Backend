@@ -52,7 +52,7 @@ async def websocket_endpoint(websocket: WebSocket, tipo: str, cliente_id: str):
             print(f"[WS] Mensaje de {key}: {data}")
     except WebSocketDisconnect:
         manager.disconnect(websocket, key)
-        
+
 @router.websocket("/ws/tecnico/{tecnico_id}")
 async def websocket_tecnico(websocket: WebSocket, tecnico_id: str):
     await websocket.accept()
@@ -60,35 +60,50 @@ async def websocket_tecnico(websocket: WebSocket, tecnico_id: str):
     try:
         while True:
             data = await websocket.receive_json()
-            if data.get("tipo") == "ubicacion":
-                # Actualizar ubicación en BD
-                from app.database import SessionLocal
-                from app.models.tecnico import Tecnico
-                from app.models.incidente import Incidente
-                db = SessionLocal()
-                try:
-                    tecnico = db.query(Tecnico).filter(Tecnico.id == tecnico_id).first()
-                    if tecnico:
-                        tecnico.latitud_actual = data["latitud"]
-                        tecnico.longitud_actual = data["longitud"]
-                        db.commit()
 
-                        # Notificar al usuario del incidente activo
-                        incidente = db.query(Incidente).filter(
+            # Validar que tenga el tipo correcto
+            if not data or data.get("tipo") != "ubicacion":
+                continue
+
+            # Validar que tenga latitud y longitud
+            if "latitud" not in data or "longitud" not in data:
+                continue
+
+            from app.database import SessionLocal
+            from app.models.tecnico import Tecnico
+            from app.models.incidente import Incidente
+
+            db = SessionLocal()
+            try:
+                tecnico = db.query(Tecnico).filter(Tecnico.id == tecnico_id).first()
+                if tecnico:
+                    tecnico.latitud_actual = data["latitud"]
+                    tecnico.longitud_actual = data["longitud"]
+                    db.commit()
+
+                    incidente = (
+                        db.query(Incidente)
+                        .filter(
                             Incidente.tecnico_id == tecnico_id,
-                            Incidente.estado == "en_proceso"
-                        ).first()
-                        if incidente:
-                            await manager.enviar_a(
-                                f"usuario_{incidente.usuario_id}",
-                                {
-                                    "tipo": "ubicacion_tecnico",
-                                    "latitud": data["latitud"],
-                                    "longitud": data["longitud"],
-                                    "tecnico_id": tecnico_id
-                                }
-                            )
-                finally:
-                    db.close()
+                            Incidente.estado == "en_proceso",
+                        )
+                        .first()
+                    )
+
+                    if incidente:
+                        await manager.enviar_a(
+                            f"usuario_{incidente.usuario_id}",
+                            {
+                                "tipo": "ubicacion_tecnico",
+                                "latitud": data["latitud"],
+                                "longitud": data["longitud"],
+                                "tecnico_id": tecnico_id,
+                            },
+                        )
+            finally:
+                db.close()
+
     except WebSocketDisconnect:
         print(f"[WS] Técnico desconectado: {tecnico_id}")
+    except Exception as e:
+        print(f"[WS] Error técnico: {e}")
