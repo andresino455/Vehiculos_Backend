@@ -24,6 +24,7 @@ class IncidenteCrear(BaseModel):
     descripcion_texto: Optional[str] = None
     tipo_problema: Optional[str] = None
 
+
 class IncidenteRespuesta(BaseModel):
     id: UUID
     usuario_id: UUID

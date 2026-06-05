@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from uuid import UUID
@@ -13,20 +13,23 @@ from app.models.historial_estado import HistorialEstado
 from app.models.notificacion import Notificacion
 from app.schemas.incidente import IncidenteCrear, IncidenteRespuesta
 from app.core.dependencies import get_usuario_actual, get_taller_actual, get_token
+from app.core.security import decode_token
 from app.models.usuario import Usuario
 import math
-from app.core.security import decode_token
+import threading
+import asyncio
 
 router = APIRouter(prefix="/incidentes", tags=["Incidentes"])
 
-
-async def notificar_ws(cliente_id: str, mensaje: dict):
-    try:
-        from app.routers.websocket import manager
-
-        await manager.enviar_a(cliente_id, mensaje)
-    except Exception as e:
-        print(f"[WS] Error notificando: {e}")
+ESTADOS_VALIDOS = [
+    "pendiente",
+    "buscando_taller",
+    "taller_asignado",
+    "en_camino",
+    "en_atencion",
+    "finalizado",
+    "cancelado",
+]
 
 
 def calcular_distancia(lat1, lon1, lat2, lon2):
@@ -42,113 +45,102 @@ def calcular_distancia(lat1, lon1, lat2, lon2):
     return R * 2 * math.asin(math.sqrt(a))
 
 
-def analizar_y_notificar(incidente_id: str):
-    from app.database import SessionLocal
-    from app.services.ia_service import generar_resumen
-    import threading
-    import asyncio
+def enviar_ws_async(cliente_id: str, mensaje: dict):
+    def run():
+        try:
+            from app.routers.websocket import manager
 
-    db = SessionLocal()
-    try:
-        incidente = db.query(Incidente).filter(Incidente.id == incidente_id).first()
-        if not incidente:
-            return
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(manager.enviar_a(cliente_id, mensaje))
+            loop.close()
+        except Exception as e:
+            print(f"[WS] Error: {e}")
 
-        print(f"[IA] Analizando incidente {incidente_id}...")
+    threading.Thread(target=run, daemon=True).start()
 
-        resumen = generar_resumen(
-            descripcion_texto=incidente.descripcion_texto or "",
-            tipo_problema=incidente.tipo_problema or "",
-        )
 
-        print(f"[IA] Resultado: {resumen}")
+def enviar_push_async(
+    db_session, usuario_id: str, titulo: str, mensaje: str, data: dict = {}
+):
+    def run():
+        try:
+            from app.services.fcm_service import enviar_notificacion_push
+            from app.database import SessionLocal
 
-        incidente.resumen_ia = resumen.get("resumen", "")
-        incidente.clasificacion_ia = resumen.get("tipo_problema", "incierto")
-        incidente.prioridad = resumen.get("prioridad", "media")
-
-        if not incidente.tipo_problema or incidente.tipo_problema == "incierto":
-            incidente.tipo_problema = resumen.get("tipo_problema", "incierto")
-
-        db.commit()
-
-        tipo_problema = incidente.tipo_problema or "general"
-        talleres = db.query(Taller).filter(Taller.activo == True).all()
-
-        talleres_candidatos = []
-        for taller in talleres:
-            if not taller.latitud or not taller.longitud:
-                continue
-
-            distancia = calcular_distancia(
-                incidente.latitud, incidente.longitud, taller.latitud, taller.longitud
-            )
-
-            if distancia > 50:
-                continue
-
-            tiene_servicio = True
-            if taller.tipos_servicio and tipo_problema not in ["incierto", "otros"]:
-                tiene_servicio = tipo_problema in taller.tipos_servicio
-
-            if tiene_servicio:
-                talleres_candidatos.append({"taller": taller, "distancia": distancia})
-
-        talleres_candidatos.sort(key=lambda x: x["distancia"])
-
-        print(f"[IA] Talleres candidatos encontrados: {len(talleres_candidatos)}")
-
-        for candidato in talleres_candidatos[:5]:
-            taller = candidato["taller"]
-            notificacion = Notificacion(
-                destinatario_id=taller.id,
-                tipo_destinatario="taller",
-                tipo="nueva_solicitud",
-                titulo="Nueva emergencia vehicular",
-                mensaje=(
-                    f"Tipo: {incidente.tipo_problema} · "
-                    f"Prioridad: {incidente.prioridad} · "
-                    f"Distancia: {candidato['distancia']:.1f}km · "
-                    f"{resumen.get('recomendacion', '')}"
-                ),
-            )
-            db.add(notificacion)
-
-        db.commit()
-        print(f"[IA] Análisis completado para incidente {incidente_id}")
-
-        # Notificar a talleres por WebSocket
-        incidente_id_str = str(incidente.id)
-        tipo_problema_final = incidente.tipo_problema
-        prioridad_final = incidente.prioridad
-
-        def broadcast():
+            db2 = SessionLocal()
             try:
-                from app.routers.websocket import manager
+                enviar_notificacion_push(db2, usuario_id, titulo, mensaje, data)
+            finally:
+                db2.close()
+        except Exception as e:
+            print(f"[FCM] Error: {e}")
 
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                loop.run_until_complete(
-                    manager.broadcast_talleres(
-                        {
-                            "tipo": "nuevo_incidente",
-                            "titulo": "Nueva emergencia vehicular",
-                            "mensaje": f"Tipo: {tipo_problema_final} · Prioridad: {prioridad_final}",
-                            "incidente_id": incidente_id_str,
-                        }
-                    )
-                )
-                loop.close()
-            except Exception as e:
-                print(f"[WS] Error en broadcast: {e}")
+    threading.Thread(target=run, daemon=True).start()
 
-        threading.Thread(target=broadcast, daemon=True).start()
 
-    except Exception as e:
-        print(f"[IA] Error: {e}")
-        db.rollback()
-    finally:
-        db.close()
+def registrar_historial(
+    db,
+    incidente_id,
+    estado_anterior,
+    estado_nuevo,
+    actor_tipo,
+    actor_id=None,
+    nota=None,
+):
+    historial = HistorialEstado(
+        incidente_id=incidente_id,
+        estado_anterior=estado_anterior,
+        estado_nuevo=estado_nuevo,
+        actor_tipo=actor_tipo,
+        actor_id=actor_id,
+        nota=nota,
+    )
+    db.add(historial)
+
+
+def notificar_usuario(
+    usuario_id: str, incidente_id: str, estado: str, mensaje_extra: str = ""
+):
+    mensajes = {
+        "buscando_taller": (
+            "🔍 Buscando taller",
+            "Estamos buscando el taller más cercano para atenderte.",
+        ),
+        "taller_asignado": (
+            "✅ Taller asignado",
+            f"Un taller aceptó tu solicitud. {mensaje_extra}",
+        ),
+        "en_camino": (
+            "🚗 Técnico en camino",
+            f"El técnico está en camino a tu ubicación. {mensaje_extra}",
+        ),
+        "en_atencion": (
+            "🔧 En atención",
+            "El técnico llegó y está atendiendo tu vehículo.",
+        ),
+        "finalizado": (
+            "✅ Servicio finalizado",
+            "Tu vehículo fue atendido. Podés calificar y pagar.",
+        ),
+        "cancelado": (
+            "❌ Servicio cancelado",
+            f"Tu solicitud fue cancelada. {mensaje_extra}",
+        ),
+    }
+    if estado not in mensajes:
+        return
+    titulo, cuerpo = mensajes[estado]
+    ws_msg = {
+        "tipo": estado,
+        "titulo": titulo,
+        "mensaje": cuerpo,
+        "incidente_id": incidente_id,
+    }
+    enviar_ws_async(f"usuario_{usuario_id}", ws_msg)
+    enviar_push_async(
+        None, usuario_id, titulo, cuerpo, {"incidente_id": incidente_id, "tipo": estado}
+    )
 
 
 class AsignacionRespuesta(BaseModel):
@@ -170,6 +162,10 @@ class EstadoActualizar(BaseModel):
     nota: Optional[str] = None
 
 
+class RechazoRequest(BaseModel):
+    motivo: Optional[str] = None
+
+
 @router.post("/", response_model=IncidenteRespuesta, status_code=201)
 def crear_incidente(
     datos: IncidenteCrear,
@@ -183,22 +179,16 @@ def crear_incidente(
         longitud=datos.longitud,
         descripcion_texto=datos.descripcion_texto,
         tipo_problema=datos.tipo_problema,
-        estado="pendiente",
+        estado="buscando_taller",
         prioridad="media",
+        tenant_id=usuario.tenant_id,
     )
     db.add(incidente)
     db.commit()
     db.refresh(incidente)
-
-    historial = HistorialEstado(
-        incidente_id=incidente.id,
-        estado_anterior=None,
-        estado_nuevo="pendiente",
-        actor_tipo="sistema",
-    )
-    db.add(historial)
+    registrar_historial(db, incidente.id, None, "buscando_taller", "sistema")
     db.commit()
-
+    notificar_usuario(str(incidente.usuario_id), str(incidente.id), "buscando_taller")
     return incidente
 
 
@@ -218,17 +208,19 @@ def mis_incidentes(
 def incidentes_disponibles(
     db: Session = Depends(get_db), taller: Taller = Depends(get_taller_actual)
 ):
-    # Mostrar pendientes y los que este taller tiene en proceso
-    incidentes = (
+    return (
         db.query(Incidente)
         .filter(
-            (Incidente.estado == "pendiente")
-            | ((Incidente.estado == "en_proceso") & (Incidente.taller_id == taller.id))
+            Incidente.tenant_id == taller.tenant_id,
+            (Incidente.estado == "buscando_taller")
+            | (
+                (Incidente.estado.in_(["taller_asignado", "en_camino", "en_atencion"]))
+                & (Incidente.taller_id == taller.id)
+            ),
         )
         .order_by(Incidente.creado_en.desc())
         .all()
     )
-    return incidentes
 
 
 @router.get("/mis-atenciones", response_model=List[IncidenteRespuesta])
@@ -237,7 +229,9 @@ def mis_atenciones(
 ):
     return (
         db.query(Incidente)
-        .filter(Incidente.taller_id == taller.id)
+        .filter(
+            Incidente.taller_id == taller.id, Incidente.tenant_id == taller.tenant_id
+        )
         .order_by(Incidente.creado_en.desc())
         .all()
     )
@@ -247,8 +241,6 @@ def mis_atenciones(
 def obtener_incidente(
     incidente_id: str, db: Session = Depends(get_db), token: str = Depends(get_token)
 ):
-    from app.core.security import decode_token
-
     payload = decode_token(token)
     if not payload:
         raise HTTPException(status_code=401, detail="Token inválido")
@@ -305,9 +297,10 @@ def actualizar_estado(
     db: Session = Depends(get_db),
     taller: Taller = Depends(get_taller_actual),
 ):
-    estados_validos = ["pendiente", "en_proceso", "atendido", "cancelado"]
-    if datos.estado not in estados_validos:
-        raise HTTPException(status_code=400, detail="Estado inválido")
+    if datos.estado not in ESTADOS_VALIDOS:
+        raise HTTPException(
+            status_code=400, detail=f"Estado inválido. Válidos: {ESTADOS_VALIDOS}"
+        )
 
     incidente = db.query(Incidente).filter(Incidente.id == incidente_id).first()
     if not incidente:
@@ -316,102 +309,23 @@ def actualizar_estado(
     estado_anterior = incidente.estado
     incidente.estado = datos.estado
 
-    if datos.estado == "atendido":
+    if datos.estado == "finalizado":
         incidente.completado_en = datetime.utcnow()
 
-    if datos.estado in ["atendido", "cancelado"] and incidente.tecnico_id:
+    if datos.estado in ["finalizado", "cancelado"] and incidente.tecnico_id:
         tecnico = db.query(Tecnico).filter(Tecnico.id == incidente.tecnico_id).first()
         if tecnico:
             tecnico.estado = "disponible"
 
-    historial = HistorialEstado(
-        incidente_id=incidente.id,
-        estado_anterior=estado_anterior,
-        estado_nuevo=datos.estado,
-        actor_tipo="taller",
-        actor_id=taller.id,
-        nota=datos.nota,
+    registrar_historial(
+        db, incidente.id, estado_anterior, datos.estado, "taller", taller.id, datos.nota
     )
-    db.add(historial)
-
-    mensajes_notif = {
-        "atendido": {
-            "titulo": "✅ Servicio completado",
-            "mensaje": "Tu incidente fue atendido exitosamente. Podés calificar el servicio y realizar el pago.",
-        },
-        "cancelado": {
-            "titulo": "❌ Servicio cancelado",
-            "mensaje": f"Tu solicitud fue cancelada por el taller. {datos.nota or ''}",
-        },
-        "en_proceso": {
-            "titulo": "🔧 Taller en camino",
-            "mensaje": "El técnico está en camino a tu ubicación.",
-        },
-    }
-
-    notif_data = mensajes_notif.get(datos.estado)
-    if notif_data:
-        notificacion = Notificacion(
-            destinatario_id=incidente.usuario_id,
-            tipo_destinatario="usuario",
-            tipo=datos.estado,
-            titulo=notif_data["titulo"],
-            mensaje=notif_data["mensaje"],
-        )
-        db.add(notificacion)
-
-    usuario_id_str = str(incidente.usuario_id)
-    incidente_id_str = str(incidente.id)
-
     db.commit()
     db.refresh(incidente)
 
-    if notif_data:
-        import threading
-        import asyncio
-
-        def enviar_ws():
-            try:
-                from app.routers.websocket import manager
-
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                loop.run_until_complete(
-                    manager.enviar_a(
-                        f"usuario_{usuario_id_str}",
-                        {
-                            "tipo": datos.estado,
-                            "titulo": notif_data["titulo"],
-                            "mensaje": notif_data["mensaje"],
-                            "incidente_id": incidente_id_str,
-                        },
-                    )
-                )
-                loop.close()
-            except Exception as e:
-                print(f"[WS] Error notificando usuario: {e}")
-
-        def enviar_push():
-            try:
-                from app.services.fcm_service import enviar_notificacion_push
-                from app.database import SessionLocal
-
-                db2 = SessionLocal()
-                try:
-                    enviar_notificacion_push(
-                        db2,
-                        usuario_id_str,
-                        notif_data["titulo"],
-                        notif_data["mensaje"],
-                        {"incidente_id": incidente_id_str, "tipo": datos.estado},
-                    )
-                finally:
-                    db2.close()
-            except Exception as e:
-                print(f"[FCM] Error: {e}")
-
-        threading.Thread(target=enviar_ws, daemon=True).start()
-        threading.Thread(target=enviar_push, daemon=True).start()
+    usuario_id_str = str(incidente.usuario_id)
+    incidente_id_str = str(incidente.id)
+    notificar_usuario(usuario_id_str, incidente_id_str, datos.estado, datos.nota or "")
 
     return incidente
 
@@ -424,13 +338,11 @@ def asignar_taller(
 ):
     incidente = (
         db.query(Incidente)
-        .filter(Incidente.id == incidente_id, Incidente.estado == "pendiente")
+        .filter(Incidente.id == incidente_id, Incidente.estado == "buscando_taller")
         .first()
     )
     if not incidente:
-        raise HTTPException(
-            status_code=404, detail="Incidente no encontrado o no disponible"
-        )
+        raise HTTPException(status_code=404, detail="Incidente no disponible")
 
     tecnico_disponible = (
         db.query(Tecnico)
@@ -439,10 +351,7 @@ def asignar_taller(
     )
 
     if not tecnico_disponible:
-        raise HTTPException(
-            status_code=400,
-            detail="No tenés técnicos disponibles. Liberá un técnico antes de aceptar una solicitud.",
-        )
+        raise HTTPException(status_code=400, detail="No tenés técnicos disponibles")
 
     distancia = None
     tiempo_estimado = None
@@ -463,7 +372,7 @@ def asignar_taller(
 
     incidente.taller_id = taller.id
     incidente.tecnico_id = tecnico_disponible.id
-    incidente.estado = "en_proceso"
+    incidente.estado = "taller_asignado"
     tecnico_disponible.estado = "ocupado"
 
     if taller.latitud and taller.longitud:
@@ -474,7 +383,7 @@ def asignar_taller(
         destinatario_id=incidente.usuario_id,
         tipo_destinatario="usuario",
         tipo="taller_asignado",
-        titulo="¡Taller en camino!",
+        titulo="✅ Taller asignado",
         mensaje=f"{taller.nombre} aceptó tu solicitud. Tiempo estimado: {tiempo_estimado} min.",
     )
     db.add(notificacion)
@@ -482,66 +391,67 @@ def asignar_taller(
     taller_nombre = taller.nombre
     usuario_id_str = str(incidente.usuario_id)
     incidente_id_str = str(incidente.id)
-    tiempo_est = tiempo_estimado
 
+    registrar_historial(
+        db, incidente.id, "buscando_taller", "taller_asignado", "taller", taller.id
+    )
     db.commit()
     db.refresh(asignacion)
 
-    import threading
-    import asyncio
-
-    def enviar_ws():
-        try:
-            from app.routers.websocket import manager
-
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(
-                manager.enviar_a(
-                    f"usuario_{usuario_id_str}",
-                    {
-                        "tipo": "taller_asignado",
-                        "titulo": "¡Taller en camino!",
-                        "mensaje": f"{taller_nombre} aceptó tu solicitud. Tiempo estimado: {tiempo_est} min.",
-                        "incidente_id": incidente_id_str,
-                    },
-                )
-            )
-            loop.close()
-        except Exception as e:
-            print(f"[WS] Error notificando usuario: {e}")
-
-    def enviar_push():
-        try:
-            from app.services.fcm_service import enviar_notificacion_push
-            from app.database import SessionLocal
-
-            db2 = SessionLocal()
-            try:
-                enviar_notificacion_push(
-                    db2,
-                    usuario_id_str,
-                    "¡Taller en camino!",
-                    f"{taller_nombre} aceptó tu solicitud. Tiempo estimado: {tiempo_est} min.",
-                    {"incidente_id": incidente_id_str, "tipo": "taller_asignado"},
-                )
-            finally:
-                db2.close()
-        except Exception as e:
-            print(f"[FCM] Error: {e}")
-
-    threading.Thread(target=enviar_ws, daemon=True).start()
-    threading.Thread(target=enviar_push, daemon=True).start()
+    notificar_usuario(
+        usuario_id_str,
+        incidente_id_str,
+        "taller_asignado",
+        f"{taller_nombre} acepto. Tiempo estimado: {tiempo_estimado} min.",
+    )
 
     return asignacion
+
+
+@router.post("/{incidente_id}/rechazar")
+def rechazar_incidente(
+    incidente_id: str,
+    datos: RechazoRequest,
+    db: Session = Depends(get_db),
+    taller: Taller = Depends(get_taller_actual),
+):
+    incidente = (
+        db.query(Incidente)
+        .filter(Incidente.id == incidente_id, Incidente.estado == "buscando_taller")
+        .first()
+    )
+    if not incidente:
+        raise HTTPException(
+            status_code=404, detail="Incidente no disponible para rechazar"
+        )
+
+    from sqlalchemy import text
+
+    db.execute(
+        text(
+            "INSERT INTO rechazos_taller (id, incidente_id, taller_id, motivo) VALUES (uuid_generate_v4(), :inc, :tal, :mot)"
+        ),
+        {"inc": str(incidente.id), "tal": str(taller.id), "mot": datos.motivo},
+    )
+
+    registrar_historial(
+        db,
+        incidente.id,
+        "buscando_taller",
+        "buscando_taller",
+        "taller",
+        taller.id,
+        f"Rechazado por {taller.nombre}: {datos.motivo or 'sin motivo'}",
+    )
+    db.commit()
+
+    return {"mensaje": "Solicitud rechazada"}
 
 
 @router.get("/{incidente_id}/historial")
 def historial_incidente(
     incidente_id: str, db: Session = Depends(get_db), token: str = Depends(get_token)
 ):
-    from app.core.security import decode_token
-
     payload = decode_token(token)
     if not payload:
         raise HTTPException(status_code=401, detail="Token inválido")

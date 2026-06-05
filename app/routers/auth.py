@@ -8,24 +8,36 @@ from app.schemas.taller import TallerRegistro, TallerLogin, TallerRespuesta
 from app.schemas.token import Token
 from app.core.security import hash_password, verify_password, create_access_token
 from pydantic import BaseModel
+from typing import Optional
 
 router = APIRouter(prefix="/auth", tags=["Autenticación"])
 
+
 @router.post("/registro-usuario", response_model=UsuarioRespuesta, status_code=201)
-def registro_usuario(datos: UsuarioRegistro, db: Session = Depends(get_db)):
+def registro_usuario(
+    datos: UsuarioRegistro,
+    tenant_id: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
     if db.query(Usuario).filter(Usuario.email == datos.email).first():
         raise HTTPException(status_code=400, detail="El email ya está registrado")
+
+    # Usar tenant por defecto si no se especifica
+    tid = tenant_id or "00000000-0000-0000-0000-000000000001"
+
     usuario = Usuario(
         nombre=datos.nombre,
         apellido=datos.apellido,
         email=datos.email,
         telefono=datos.telefono,
-        password_hash=hash_password(datos.password)
+        password_hash=hash_password(datos.password),
+        tenant_id=tid,
     )
     db.add(usuario)
     db.commit()
     db.refresh(usuario)
     return usuario
+
 
 @router.post("/login-usuario", response_model=Token)
 def login_usuario(datos: UsuarioLogin, db: Session = Depends(get_db)):
@@ -35,10 +47,18 @@ def login_usuario(datos: UsuarioLogin, db: Session = Depends(get_db)):
     token = create_access_token({"sub": str(usuario.id), "tipo": "usuario"})
     return {"access_token": token, "token_type": "bearer", "tipo_usuario": "usuario"}
 
+
 @router.post("/registro-taller", response_model=TallerRespuesta, status_code=201)
-def registro_taller(datos: TallerRegistro, db: Session = Depends(get_db)):
+def registro_taller(
+    datos: TallerRegistro,
+    tenant_id: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
     if db.query(Taller).filter(Taller.email == datos.email).first():
         raise HTTPException(status_code=400, detail="El email ya está registrado")
+
+    tid = tenant_id or "00000000-0000-0000-0000-000000000001"
+
     taller = Taller(
         nombre=datos.nombre,
         razon_social=datos.razon_social,
@@ -49,12 +69,14 @@ def registro_taller(datos: TallerRegistro, db: Session = Depends(get_db)):
         latitud=datos.latitud,
         longitud=datos.longitud,
         tipos_servicio=datos.tipos_servicio,
-        capacidad_max=datos.capacidad_max
+        capacidad_max=datos.capacidad_max,
+        tenant_id=tid,
     )
     db.add(taller)
     db.commit()
     db.refresh(taller)
     return taller
+
 
 @router.post("/login-taller", response_model=Token)
 def login_taller(datos: TallerLogin, db: Session = Depends(get_db)):
@@ -63,6 +85,7 @@ def login_taller(datos: TallerLogin, db: Session = Depends(get_db)):
         raise HTTPException(status_code=401, detail="Credenciales incorrectas")
     token = create_access_token({"sub": str(taller.id), "tipo": "taller"})
     return {"access_token": token, "token_type": "bearer", "tipo_usuario": "taller"}
+
 
 from app.models.tecnico import Tecnico
 

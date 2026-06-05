@@ -14,6 +14,9 @@ from app.routers import (
     ia,
     calificaciones,
     tecnicos_app,
+    kpis,
+    tenants,
+    cotizaciones,
 )
 from app.routers import websocket as ws_router
 from app.routers import notificaciones_push
@@ -48,6 +51,9 @@ app.include_router(ws_router.router)
 app.include_router(calificaciones.router)
 app.include_router(tecnicos_app.router)
 app.include_router(notificaciones_push.router)
+app.include_router(kpis.router)
+app.include_router(tenants.router)
+app.include_router(cotizaciones.router)
 inicializar_firebase()
 
 def custom_openapi():

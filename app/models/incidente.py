@@ -24,7 +24,7 @@ class Incidente(Base):
     creado_en         = Column(DateTime, server_default=func.now())
     actualizado_en    = Column(DateTime, server_default=func.now(), onupdate=func.now())
     completado_en     = Column(DateTime, nullable=True)
-
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=True)
     usuario           = relationship("Usuario", back_populates="incidentes")
     vehiculo          = relationship("Vehiculo", back_populates="incidentes")
     taller            = relationship("Taller", back_populates="incidentes")
