@@ -26,6 +26,19 @@ class TenantRespuesta(BaseModel):
     class Config:
         from_attributes = True
 
+
+# PRIMERO rutas fijas
+@router.get("/publicos")
+def tenants_publicos(db: Session = Depends(get_db)):
+    tenants = db.query(Tenant).filter(Tenant.activo == True).all()
+    return [{"id": str(t.id), "nombre": t.nombre} for t in tenants]
+
+
+@router.get("/", response_model=List[TenantRespuesta])
+def listar_tenants(db: Session = Depends(get_db)):
+    return db.query(Tenant).filter(Tenant.activo == True).all()
+
+
 @router.post("/", response_model=TenantRespuesta, status_code=201)
 def crear_tenant(datos: TenantCrear, db: Session = Depends(get_db)):
     tenant = Tenant(nombre=datos.nombre, descripcion=datos.descripcion)
@@ -34,10 +47,8 @@ def crear_tenant(datos: TenantCrear, db: Session = Depends(get_db)):
     db.refresh(tenant)
     return tenant
 
-@router.get("/", response_model=List[TenantRespuesta])
-def listar_tenants(db: Session = Depends(get_db)):
-    return db.query(Tenant).filter(Tenant.activo == True).all()
 
+# DESPUÉS rutas dinámicas
 @router.get("/{tenant_id}/estadisticas")
 def estadisticas_tenant(tenant_id: str, db: Session = Depends(get_db)):
     tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()

@@ -14,6 +14,7 @@ class TallerRegistro(BaseModel):
     longitud: Optional[float] = None
     tipos_servicio: Optional[List[str]] = None
     capacidad_max: int = 1
+    tenant_id: Optional[str] = None
 
 class TallerLogin(BaseModel):
     email: EmailStr

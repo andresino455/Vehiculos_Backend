@@ -6,6 +6,7 @@ from app.models.taller import Taller
 from app.schemas.usuario import UsuarioRegistro, UsuarioLogin, UsuarioRespuesta
 from app.schemas.taller import TallerRegistro, TallerLogin, TallerRespuesta
 from app.schemas.token import Token
+from app.models.tenant import Tenant
 from app.core.security import hash_password, verify_password, create_access_token
 from pydantic import BaseModel
 from typing import Optional
@@ -49,15 +50,11 @@ def login_usuario(datos: UsuarioLogin, db: Session = Depends(get_db)):
 
 
 @router.post("/registro-taller", response_model=TallerRespuesta, status_code=201)
-def registro_taller(
-    datos: TallerRegistro,
-    tenant_id: Optional[str] = None,
-    db: Session = Depends(get_db),
-):
+def registro_taller(datos: TallerRegistro, db: Session = Depends(get_db)):
     if db.query(Taller).filter(Taller.email == datos.email).first():
         raise HTTPException(status_code=400, detail="El email ya está registrado")
 
-    tid = tenant_id or "00000000-0000-0000-0000-000000000001"
+    tid = datos.tenant_id or "00000000-0000-0000-0000-000000000001"
 
     taller = Taller(
         nombre=datos.nombre,
@@ -85,6 +82,12 @@ def login_taller(datos: TallerLogin, db: Session = Depends(get_db)):
         raise HTTPException(status_code=401, detail="Credenciales incorrectas")
     token = create_access_token({"sub": str(taller.id), "tipo": "taller"})
     return {"access_token": token, "token_type": "bearer", "tipo_usuario": "taller"}
+
+
+@router.get("/publicos")
+def tenants_publicos(db: Session = Depends(get_db)):
+    tenants = db.query(Tenant).filter(Tenant.activo == True).all()
+    return [{"id": str(t.id), "nombre": t.nombre} for t in tenants]
 
 
 from app.models.tecnico import Tecnico
