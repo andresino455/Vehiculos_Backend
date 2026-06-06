@@ -1,4 +1,7 @@
 from fastapi import FastAPI
+from contextlib import asynccontextmanager
+from app.database import SessionLocal
+from app.models.tenant import Tenant
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from fastapi.staticfiles import StaticFiles
@@ -23,9 +26,32 @@ from app.routers import notificaciones_push
 
 import os
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    db = SessionLocal()
+    try:
+        tenant = db.query(Tenant).filter(Tenant.nombre == "Red Principal").first()
+        if not tenant:
+            db.add(
+                Tenant(
+                    nombre="Red Principal", descripcion="Tenant principal del sistema"
+                )
+            )
+            db.commit()
+            print("[SEED] Tenant principal creado")
+        else:
+            print("[SEED] Tenant principal ya existe")
+    except Exception as e:
+        print(f"[SEED ERROR] {e}")
+        db.rollback()
+    finally:
+        db.close()
+    yield
+
+
 app = FastAPI(
-    title="Plataforma Emergencias Vehiculares",
-    version="1.0.0"
+    title="Plataforma Emergencias Vehiculares", version="1.0.0", lifespan=lifespan
 )
 
 app.add_middleware(
