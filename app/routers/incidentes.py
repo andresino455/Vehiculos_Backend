@@ -203,25 +203,33 @@ def mis_incidentes(
         .all()
     )
 
-
 @router.get("/disponibles", response_model=List[IncidenteRespuesta])
 def incidentes_disponibles(
     db: Session = Depends(get_db), taller: Taller = Depends(get_taller_actual)
 ):
-    return (
-        db.query(Incidente)
-        .filter(
-            Incidente.tenant_id == taller.tenant_id,
-            (Incidente.estado == "buscando_taller")
-            | (
-                (Incidente.estado.in_(["taller_asignado", "en_camino", "en_atencion"]))
-                & (Incidente.taller_id == taller.id)
-            ),
-        )
-        .order_by(Incidente.creado_en.desc())
-        .all()
+    from sqlalchemy import text
+
+    # Subconsulta: incidentes que este taller ya rechazó
+    rechazados_por_este_taller = db.execute(
+        text("SELECT incidente_id FROM rechazos_taller WHERE taller_id = :taller_id"),
+        {"taller_id": str(taller.id)},
+    ).fetchall()
+    ids_rechazados = [str(r[0]) for r in rechazados_por_este_taller]
+
+    query = db.query(Incidente).filter(
+        Incidente.tenant_id == taller.tenant_id,
+        (Incidente.estado == "buscando_taller")
+        | (
+            (Incidente.estado.in_(["taller_asignado", "en_camino", "en_atencion"]))
+            & (Incidente.taller_id == taller.id)
+        ),
     )
 
+    # Excluir los que este taller rechazó
+    if ids_rechazados:
+        query = query.filter(Incidente.id.notin_(ids_rechazados))
+
+    return query.order_by(Incidente.creado_en.desc()).all()
 
 @router.get("/mis-atenciones", response_model=List[IncidenteRespuesta])
 def mis_atenciones(

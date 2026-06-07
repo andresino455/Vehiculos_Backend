@@ -27,7 +27,6 @@ class TenantRespuesta(BaseModel):
         from_attributes = True
 
 
-# PRIMERO rutas fijas
 @router.get("/publicos")
 def tenants_publicos(db: Session = Depends(get_db)):
     tenants = db.query(Tenant).filter(Tenant.activo == True).all()
