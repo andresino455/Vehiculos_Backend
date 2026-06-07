@@ -203,6 +203,7 @@ def mis_incidentes(
         .all()
     )
 
+
 @router.get("/disponibles", response_model=List[IncidenteRespuesta])
 def incidentes_disponibles(
     db: Session = Depends(get_db), taller: Taller = Depends(get_taller_actual)
@@ -225,11 +226,11 @@ def incidentes_disponibles(
         ),
     )
 
-    # Excluir los que este taller rechazó
     if ids_rechazados:
         query = query.filter(Incidente.id.notin_(ids_rechazados))
 
     return query.order_by(Incidente.creado_en.desc()).all()
+
 
 @router.get("/mis-atenciones", response_model=List[IncidenteRespuesta])
 def mis_atenciones(
@@ -317,6 +318,21 @@ def actualizar_estado(
     estado_anterior = incidente.estado
     incidente.estado = datos.estado
 
+    # Asignar técnico disponible automáticamente al pasar a en_camino
+    if datos.estado == "en_camino" and not incidente.tecnico_id:
+        tecnico_disponible = (
+            db.query(Tecnico)
+            .filter(Tecnico.taller_id == taller.id, Tecnico.estado == "disponible")
+            .first()
+        )
+        if not tecnico_disponible:
+            raise HTTPException(
+                status_code=400,
+                detail="No hay técnicos disponibles. Asigná uno antes de cambiar a en camino.",
+            )
+        incidente.tecnico_id = tecnico_disponible.id
+        tecnico_disponible.estado = "ocupado"
+
     if datos.estado == "finalizado":
         incidente.completado_en = datetime.utcnow()
 
@@ -336,7 +352,6 @@ def actualizar_estado(
     notificar_usuario(usuario_id_str, incidente_id_str, datos.estado, datos.nota or "")
 
     return incidente
-
 
 @router.post("/{incidente_id}/asignar", response_model=AsignacionRespuesta)
 def asignar_taller(

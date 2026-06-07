@@ -107,3 +107,104 @@ def mis_cobros(
             "total_neto": round(total_neto, 2),
         },
     }
+
+
+import stripe
+from app.core.config import settings
+
+stripe.api_key = settings.STRIPE_SECRET_KEY
+
+
+class PaymentIntentRequest(BaseModel):
+    incidente_id: UUID
+    monto_total: float
+    metodo_pago: str
+
+
+class ConfirmarPagoRequest(BaseModel):
+    incidente_id: UUID
+    monto_total: float
+    metodo_pago: str
+    payment_intent_id: str
+
+
+@router.post("/crear-intent")
+def crear_payment_intent(
+    datos: PaymentIntentRequest,
+    db: Session = Depends(get_db),
+    usuario: Usuario = Depends(get_usuario_actual),
+):
+    incidente = (
+        db.query(Incidente)
+        .filter(Incidente.id == datos.incidente_id, Incidente.usuario_id == usuario.id)
+        .first()
+    )
+    if not incidente:
+        raise HTTPException(status_code=404, detail="Incidente no encontrado")
+    if db.query(Pago).filter(Pago.incidente_id == datos.incidente_id).first():
+        raise HTTPException(
+            status_code=400, detail="Este incidente ya tiene un pago registrado"
+        )
+
+    # Convertir Bs a centavos USD (Stripe no acepta BOB, usamos USD en test)
+    # 1 USD ≈ 6.96 BOB
+    monto_usd = datos.monto_total / 6.96
+    monto_centavos = int(monto_usd * 100)
+
+    intent = stripe.PaymentIntent.create(
+        amount=monto_centavos,
+        currency="usd",
+        metadata={
+            "incidente_id": str(datos.incidente_id),
+            "usuario_id": str(usuario.id),
+            "monto_bs": str(datos.monto_total),
+        },
+    )
+    return {"client_secret": intent.client_secret, "payment_intent_id": intent.id}
+
+
+@router.post("/confirmar", response_model=PagoRespuesta, status_code=201)
+def confirmar_pago(
+    datos: ConfirmarPagoRequest,
+    db: Session = Depends(get_db),
+    usuario: Usuario = Depends(get_usuario_actual),
+):
+    # Verificar con Stripe que el pago fue exitoso
+    try:
+        intent = stripe.PaymentIntent.retrieve(datos.payment_intent_id)
+        if intent.status != "succeeded":
+            raise HTTPException(
+                status_code=400, detail="El pago no fue completado en Stripe"
+            )
+    except stripe.error.StripeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    incidente = (
+        db.query(Incidente)
+        .filter(Incidente.id == datos.incidente_id, Incidente.usuario_id == usuario.id)
+        .first()
+    )
+    if not incidente:
+        raise HTTPException(status_code=404, detail="Incidente no encontrado")
+    if db.query(Pago).filter(Pago.incidente_id == datos.incidente_id).first():
+        raise HTTPException(
+            status_code=400, detail="Este incidente ya tiene un pago registrado"
+        )
+
+    comision = round(datos.monto_total * 0.10, 2)
+    monto_taller = round(datos.monto_total - comision, 2)
+
+    pago = Pago(
+        incidente_id=datos.incidente_id,
+        usuario_id=usuario.id,
+        monto_total=datos.monto_total,
+        comision_plataforma=comision,
+        monto_taller=monto_taller,
+        estado="completado",
+        metodo_pago=datos.metodo_pago,
+        pagado_en=datetime.utcnow(),
+    )
+    db.add(pago)
+    db.commit()
+    db.refresh(pago)
+    return pago
