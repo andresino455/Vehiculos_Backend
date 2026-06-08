@@ -9,6 +9,7 @@ class UsuarioRegistro(BaseModel):
     email: EmailStr
     telefono: Optional[str] = None
     password: str
+    codigo_tenant: Optional[str] = None
 
 class UsuarioLogin(BaseModel):
     email: EmailStr

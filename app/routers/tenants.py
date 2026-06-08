@@ -15,6 +15,7 @@ router = APIRouter(prefix="/tenants", tags=["Tenants"])
 class TenantCrear(BaseModel):
     nombre: str
     descripcion: Optional[str] = None
+    codigo: Optional[str] = None
 
 class TenantRespuesta(BaseModel):
     id: UUID
@@ -22,6 +23,7 @@ class TenantRespuesta(BaseModel):
     descripcion: Optional[str]
     activo: bool
     creado_en: datetime
+    codigo: Optional[str] = None  # ← agregar
 
     class Config:
         from_attributes = True
@@ -40,7 +42,11 @@ def listar_tenants(db: Session = Depends(get_db)):
 
 @router.post("/", response_model=TenantRespuesta, status_code=201)
 def crear_tenant(datos: TenantCrear, db: Session = Depends(get_db)):
-    tenant = Tenant(nombre=datos.nombre, descripcion=datos.descripcion)
+    tenant = Tenant(
+        nombre=datos.nombre,
+        descripcion=datos.descripcion,
+        codigo=datos.codigo.upper() if datos.codigo else None,  # ← agregar
+    )
     db.add(tenant)
     db.commit()
     db.refresh(tenant)

@@ -12,3 +12,4 @@ class Tenant(Base):
     descripcion = Column(String)
     activo      = Column(Boolean, default=True)
     creado_en   = Column(DateTime, server_default=func.now())
+    codigo = Column(String(20), unique=True, nullable=True)

@@ -17,14 +17,22 @@ router = APIRouter(prefix="/auth", tags=["Autenticación"])
 @router.post("/registro-usuario", response_model=UsuarioRespuesta, status_code=201)
 def registro_usuario(
     datos: UsuarioRegistro,
-    tenant_id: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
     if db.query(Usuario).filter(Usuario.email == datos.email).first():
         raise HTTPException(status_code=400, detail="El email ya está registrado")
 
-    # Usar tenant por defecto si no se especifica
-    tid = tenant_id or "00000000-0000-0000-0000-000000000001"
+    # Resolver tenant por código o usar el principal
+    tid = "00000000-0000-0000-0000-000000000001"
+    if datos.codigo_tenant:
+        tenant = (
+            db.query(Tenant)
+            .filter(Tenant.codigo == datos.codigo_tenant.upper())
+            .first()
+        )
+        if not tenant:
+            raise HTTPException(status_code=400, detail="Código de red no válido")
+        tid = str(tenant.id)
 
     usuario = Usuario(
         nombre=datos.nombre,
