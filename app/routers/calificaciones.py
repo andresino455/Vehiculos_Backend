@@ -33,7 +33,6 @@ class CalificacionRespuesta(BaseModel):
         from_attributes = True
 
 
-
 @router.post("/", response_model=CalificacionRespuesta, status_code=201)
 def crear_calificacion(
     datos: CalificacionCrear,
@@ -43,11 +42,15 @@ def crear_calificacion(
     if datos.puntuacion < 1 or datos.puntuacion > 5:
         raise HTTPException(status_code=400, detail="La puntuación debe ser entre 1 y 5")
 
-    incidente = db.query(Incidente).filter(
-        Incidente.id == datos.incidente_id,
-        Incidente.usuario_id == usuario.id,
-        Incidente.estado == "atendido"
-    ).first()
+    incidente = (
+        db.query(Incidente)
+        .filter(
+            Incidente.id == datos.incidente_id,
+            Incidente.usuario_id == usuario.id,
+            Incidente.estado == "finalizado",
+        )
+        .first()
+    )
     if not incidente:
         raise HTTPException(status_code=404, detail="Incidente no encontrado o no está atendido")
 
