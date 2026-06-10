@@ -15,10 +15,12 @@ from app.core.dependencies import get_taller_actual
 
 router = APIRouter(prefix="/pagos", tags=["Pagos"])
 
+
 class PagoCrear(BaseModel):
     incidente_id: UUID
     monto_total: float
     metodo_pago: str
+
 
 class PagoRespuesta(BaseModel):
     id: UUID
@@ -34,16 +36,24 @@ class PagoRespuesta(BaseModel):
     class Config:
         from_attributes = True
 
+
 @router.post("/", response_model=PagoRespuesta, status_code=201)
-def crear_pago(datos: PagoCrear, db: Session = Depends(get_db), usuario: Usuario = Depends(get_usuario_actual)):
-    incidente = db.query(Incidente).filter(
-        Incidente.id == datos.incidente_id,
-        Incidente.usuario_id == usuario.id
-    ).first()
+def crear_pago(
+    datos: PagoCrear,
+    db: Session = Depends(get_db),
+    usuario: Usuario = Depends(get_usuario_actual),
+):
+    incidente = (
+        db.query(Incidente)
+        .filter(Incidente.id == datos.incidente_id, Incidente.usuario_id == usuario.id)
+        .first()
+    )
     if not incidente:
         raise HTTPException(status_code=404, detail="Incidente no encontrado")
     if db.query(Pago).filter(Pago.incidente_id == datos.incidente_id).first():
-        raise HTTPException(status_code=400, detail="Este incidente ya tiene un pago registrado")
+        raise HTTPException(
+            status_code=400, detail="Este incidente ya tiene un pago registrado"
+        )
 
     comision = round(datos.monto_total * 0.10, 2)
     monto_taller = round(datos.monto_total - comision, 2)
@@ -56,15 +66,18 @@ def crear_pago(datos: PagoCrear, db: Session = Depends(get_db), usuario: Usuario
         monto_taller=monto_taller,
         estado="completado",
         metodo_pago=datos.metodo_pago,
-        pagado_en=datetime.utcnow()
+        pagado_en=datetime.utcnow(),
     )
     db.add(pago)
     db.commit()
     db.refresh(pago)
     return pago
 
+
 @router.get("/mis-pagos", response_model=list[PagoRespuesta])
-def mis_pagos(db: Session = Depends(get_db), usuario: Usuario = Depends(get_usuario_actual)):
+def mis_pagos(
+    db: Session = Depends(get_db), usuario: Usuario = Depends(get_usuario_actual)
+):
     return db.query(Pago).filter(Pago.usuario_id == usuario.id).all()
 
 
@@ -91,6 +104,10 @@ def mis_cobros(
             {
                 "id": str(p.id),
                 "incidente_id": str(p.incidente_id),
+                "incidente_descripcion": (
+                    p.incidente.descripcion if p.incidente else "—"
+                ),
+                "incidente_direccion": p.incidente.direccion if p.incidente else "—",
                 "monto_total": float(p.monto_total),
                 "comision_plataforma": float(p.comision_plataforma),
                 "monto_taller": float(p.monto_taller),
